@@ -146,21 +146,21 @@ end
 
 # ╔═╡ 36778946-29b9-40ee-aad3-944888bc8560
 "CES energy production function"
-function F(g, b, energy::Energy)
+function F(g, k, energy::Energy)
     @unpack γ, α, A = energy
     
-    return A * (α * (g^γ) + (1 - α) * (b^γ))^(1 / γ)
+    return A * (α * (g^γ) + (1 - α) * (k^γ))^(1 / γ)
 end;
 
 # ╔═╡ 59be0f73-5af1-4db7-859d-7c7bf8353954
 "Implied green installed capacity"
-function G(b, z, energy::Energy)
+function G(k, z, energy::Energy)
     @unpack γ, α, A = energy
 
     z̃ = (z / A)^γ
-    b̃ = (1 - α) * b^γ
+    b̃ = (1 - α) * k^γ
 
-	base = ((z / A)^γ - (1 - α) * b^γ) / α
+	base = ((z / A)^γ - (1 - α) * k^γ) / α
 	exponent = inv(γ)
 
     return NaNMath.pow(base, exponent) # Returns NaN in case base < 0
@@ -190,17 +190,17 @@ md"
 # ╔═╡ 1907ce8c-7cac-4683-83e7-febb6964d189
 begin
 	greencosts = Cost(2.2, 22., 0.04)
-	browncost = Cost(1.05, 26., 0.025)
+	pollutingcosts = Cost(1.05, 26., 0.025)
 
-	costs = (greencosts, browncost)
+	costs = (greencosts, pollutingcosts)
 
 	# Capacity
 	totaleucapacity = 1.2 # TW
 	g₀ = totaleucapacity * α
-	b₀ = totaleucapacity * (1 - α)
+	k₀ = totaleucapacity * (1 - α)
 	z = 1_313. # Energy demand in TWh
 
-	A = z / (α * g₀^γ + (1 - α) * b₀^γ)^(1 / γ)
+	A = z / (α * g₀^γ + (1 - α) * k₀^γ)^(1 / γ)
 
 	energy = Energy(A, α, γ)
 end
@@ -213,228 +213,194 @@ capitalspace = range(0, 1.5, 301);
 
 # ╔═╡ 33e1b5d4-be70-4be7-ac72-21b0b3248089
 let
-	outputfig = contourf(capitalspace, capitalspace, (b, g) -> F(g, b, energy);
-			 ylabel = L"Green capacity $g$ TW", xlabel =  L"Brown capacity $b$ TW", title = L"Energy output $z$ TWh",
+	outputfig = contourf(capitalspace, capitalspace, (k, g) -> F(g, k, energy);
+			 ylabel = L"Green capacity $g$ TW", xlabel =  L"Polluting capacity $k$ TW", title = L"Energy output $z$ TWh",
 			 clims = (0, Inf), c = :viridis, margins = 5Plots.mm, xlims = extrema(capitalspace), ylims = extrema(capitalspace), levels = 31,
 			aspect_ratio = 1
 		)
 
-	isocolor = :white
-	plot!(outputfig, capitalspace, b -> G(b, z, energy::Energy), c = isocolor, linewidth = 4, label = L"F(g_0, b_0)", foreground_color_legend = nothing, background_color_legend = nothing, legendfontcolor = isocolor, legendfontsize = 11)
+	isocolor = "#FAFAFA"
+	plot!(outputfig, capitalspace, k -> G(k, z, energy::Energy), c = isocolor, linewidth = 4, label = L"F(g_0, k_0)", foreground_color_legend = nothing, background_color_legend = nothing, legendfontcolor = isocolor, legendfontsize = 11, legend = :bottomleft)
 
-	scatter!(outputfig, [b₀], [g₀], c = isocolor, markersize = 5, label = L"(b_0, g_0)")
+	scatter!(outputfig, [k₀], [g₀], c = isocolor, markersize = 5, markerstrokewidth = 0., label = L"(k_0, g_0)")
 
 end
 
-# ╔═╡ c6265738-61a3-4176-a844-21f07c9c59a8
-md"### Implied brown phase-out costs"
+# ╔═╡ e50a2f9d-a3c0-4a9d-8ab0-6be22bf3f4a2
+md"## Calibration of phase out cost"
 
-# ╔═╡ f9dad3b2-e369-4de1-806e-c7d1105d7604
-struct Mapping{T, C <: NTuple{2, <: Cost{T}}, E <: Energy{T}}
-    x₀::NTuple{2, T}
-    costs::C
-    energy::E
-end
+# ╔═╡ efcd7b80-a828-4be7-abab-4ede1b6d4d65
+function l(r, k, z, energy::Energy, costs)
+	greencosts, pollutingcosts = costs
 
-# ╔═╡ 673135ed-1d62-4f75-861c-6f0921b108ec
-x₀ = (g₀, b₀);
+	direct = c(pollutingcosts.δ * k - r, pollutingcosts) - c(pollutingcosts.δ * k, pollutingcosts)
+	substitution = c(G(k - r, z, energy) - (1 - greencosts.δ) * G(k, z, energy), greencosts) - c(greencosts.δ * G(k, z, energy), greencosts)
 
-# ╔═╡ 7be081ba-8857-47cf-a872-2453d2b81e7a
-mapping = Mapping(x₀, costs, energy);
-
-# ╔═╡ 0c89c090-8484-44da-95ae-c8e268584974
-k(d, mapping::Mapping) = k(d, mapping.x₀, mapping.costs, mapping.energy);
-
-# ╔═╡ 1c5c5ba1-7f01-437f-b099-fe2eca126de4
-function k(d, x, costs::NTuple{2, Cost}, energy::Energy)
-	g, b = x	
-	greencosts, browncosts = costs
-
-	z = F(g, b, energy)
-
-	ϕb = browncosts.δ * b
-	ϕg = greencosts.δ * g
-
-	c₀ = c(ϕb, browncosts) + c(ϕg, greencosts)
-
-	b′ = ϕb - d
-	g′ = G(b - d, z, energy) - (1 - greencosts.δ) * g
-	
-	return c(b′, browncosts) + c(g′, greencosts)
+	return direct + substitution
 end;
 
-# ╔═╡ 4bddc65c-f941-47e7-8947-125c48236adb
-P = k(b₀, x₀, costs, energy) * 1.01;
-
-# ╔═╡ 444b7ee3-5755-4ecf-9ef6-d0caf56fcfef
+# ╔═╡ 6c80005e-2f15-4313-b12f-06e1ee5960ca
 let
-	discontspace = range(0, b₀, 301);
-	maxc = k(b₀, (g₀, b₀), costs, energy)
+	lfig = plot(xlims = (0, k₀))
 	
-	plot(discontspace, d -> k(d, (g₀, b₀), costs, energy); xlabel = L"Decomissioned capital $d$ TW", c = :black, ylabel = L"Costs $c(d)$ bUSD", xlims = (0., b₀ * 1.04), ylims = (0, maxc * 1.04), linewidth = 3)
-
-
-	plot!([b₀, b₀], [0, maxc]; linestyle = :dash, c = :darkred, linewidth = 3)
-	scatter!([b₀], [maxc]; linestyle = :dash, c = :darkred, label = L"Intiial brown capital $b_0$", legend = :left)
-	plot!([0., b₀], [maxc, maxc]; linestyle = :dash, c = :darkred, linewidth = 3)
-	
-end
-
-# ╔═╡ 0c150831-02e1-42d2-bed3-97652ecaa380
-md"
-## Control
-
-In this model we assume that $t = 0$ corresponds to the year 2020 and $T = 30$ corresponds to the year 2050.
-"
-
-# ╔═╡ 492c1847-5a72-43e8-a568-c40a7d355495
-netzero = 30;
-
-# ╔═╡ 80a5150a-5eb8-4e98-9ea1-45942f0ebe85
-dᶜ = b₀ / netzero;
-
-# ╔═╡ 3d5afe26-bf47-49d6-aa91-fcbac1216594
-cᶜ = netzero * k(dᶜ, x₀, costs, energy);
-
-# ╔═╡ 869c942e-31be-41ad-af85-2da88b89e428
-md"
-## Treatment 1
-"
-
-# ╔═╡ 85475121-6074-46e8-85bd-cf2936579154
-function vfi!(Vₗ, dₗ, Vₗ₋₁, brownspace, p, mapping::Mapping; poltol = 1e-10)
-    Ṽₗ₋₁ = linear_interp(brownspace, Vₗ₋₁)
-    Ṽₗ = linear_interp(brownspace, Vₗ)
-    n = length(Vₗ)
-
-    dₗ[1] = zero(eltype(dₗ))
-
-    @inbounds Threads.@threads for i in 2:n
-        b = brownspace[i]
-        obj = @closure d -> k(d, mapping) + p * Ṽₗ(b - d) + (1 - p) * Ṽₗ₋₁(b - d)
-
-        Vᵢ, dᵢ = gss(obj, zero(b), b; tol = poltol)
-
-        Vₗ[i] = Vᵢ
-        dₗ[i] = dᵢ
-    end
-
-    return Vₗ, dₗ
-end;
-
-# ╔═╡ 3427ea22-e3ba-4bf1-a3d9-2d834bb28d9d
-niter = 101
-
-# ╔═╡ e9511742-0925-4019-a68b-23e86fe0b401
-function solvemodel!(V, d, brownspace, p, m::Mapping; niter = 101, optkwargs...)
-    V .= P # Initial guess at penalty
-
-    V₀ = [b > 0 ? P : 0. for b in brownspace] # v(b, 0) = P if b > 0
-
-    for l in 1:netzero
-        Vₗ = @view V[:, l]
-        dₗ = @view d[:, l]
-
-        Vₗ₋₁ = l > 1 ? (@view V[:, l - 1]) : V₀
-
-        for iter in 1:niter
-            vfi!(Vₗ, dₗ, Vₗ₋₁, brownspace, p, m; optkwargs...)
-        end
-    end
-
-    return V, d
-end;
-
-# ╔═╡ 59d8f158-0672-4015-8606-87793e8d04c2
-md"
-- Postponement probability ``p =`` $(@bind p Slider(0:0.005:1, show_value = true, default = 0.01)) 
-
-"
-
-# ╔═╡ 39b081c3-12fc-47b1-ad90-258dfe863482
-begin
-	n = 101
-	brownspace = range(0, b₀, n)
-	lspace = 1:netzero
-
-	V = Array{Float64}(undef, n, length(lspace))
-	d = similar(V)
-
-	solvemodel!(V, d, brownspace, p, mapping)
-end;
-
-# ╔═╡ 4c54b4b8-d340-4cc9-a95c-a423f127d692
-pcolors = cgrad([:darkgreen, :darkred]);
-
-# ╔═╡ 333f524c-5e80-4dba-b54f-32a8fdb824f5
-md" ### Optimal trajectory
-
-"
-
-# ╔═╡ 7c746053-d096-40c6-ad9d-1ccdac54db2a
-function simulatetrajectory(b₀, d, p, brownspace, netzero; maxiter = 1000)
-    bpath = [b₀]
-    dpath = Float64[]
-
-    t = 0
-    T = netzero
-    bₜ = copy(b₀)
-    while (bₜ > 1e-3) && (t < maxiter)
-        if rand() < p T += 1 end
-
-        t += 1
-        l = T - t
-
-        dₜ = (l > 0 && bₜ > 0) ? linear_interp(brownspace, d[:, l], bₜ) : 0.
-
-        bₜ = bₜ - dₜ
-        
-        push!(bpath, bₜ)
-        push!(dpath, dₜ)
-    end
-    
-    return bpath, dpath, T
-end;
-
-# ╔═╡ 1d020c83-4d10-484d-aa3d-afb4e8f0a735
-begin
-	ntraj = 1_000
-	
-	btraj = Vector{Float64}[]
-	Ts = Int64[]
-
-	for traj in 1:ntraj
-		bpath, dpath, T = simulatetrajectory(b₀, d, p, brownspace, netzero)
-		push!(btraj, bpath)
-		push!(Ts, T)
+	for factor in 0.2:0.2:1
+		k̄ = k₀ * factor
+		
+		plot!(lfig, range(0, k̄, 101), r -> l(r, k̄, z, energy, costs), label = "$(100factor) %")
 	end
 
-	Tmax = maximum(Ts)
+	lfig
 
-	meanpath = Vector{Float64}(undef, Tmax)
-	upperpath = Vector{Float64}(undef, Tmax)
-	lowerpath = Vector{Float64}(undef, Tmax)
-	for t in 1:Tmax
-		bₜ = [ t ≤ lastindex(bpath) ? bpath[t] : 0. for bpath in btraj ]
+end
+
+# ╔═╡ 011f9c9a-3823-42f8-b3c0-0c86e2449ad8
+md"### Optimal path"
+
+# ╔═╡ a01e2223-a008-4049-bec8-a1fd361cde4e
+begin # s is time left, such that s = 1, is the second to last period and s = D̄ is the first period
+	n = 1001
+	kspace = range(0, k₀, n)
+	D̄ = 120
+	V = Matrix{Float64}(undef, n, D̄)
+	r = similar(V)
+
+	# Solve the s = 1 case first, with the discontinuity
+	for (i, k) in enumerate(kspace)
+		r[i, 1] = k
+		V[i, 1] = l(k, k, z, energy, costs)
+	end
+
+	for s in 2:D̄
+		Vₛ₋₁ = s > 1 ? @view(V[:, s - 1]) : V₀
+		Ṽₛ₋₁ = linear_interp(kspace, Vₛ₋₁)
+
+		Vₛ = @view V[:, s]
+		rₛ = @view r[:, s]
+		
+		for (i, k) in enumerate(kspace)
+			obj = @closure r -> l(r, k, z, energy, costs) + Ṽₛ₋₁(k - r)
+			res = Optim.optimize(obj, 0, k, brent)
 	
-		meanpath[t] = median(bₜ)
-		upperpath[t] = quantile(bₜ, 0.9)
-		lowerpath[t] = quantile(bₜ, 0.1)
+			rₛ[i] = Optim.minimizer(res)
+			Vₛ[i] = Optim.minimum(res)
+		end
+	end
+
+end;
+
+# ╔═╡ dce3f8e1-2eb3-4ab2-b8c9-e9136f5c0890
+function simulatepath(k₀, D, r)
+	D̄ = size(r, 2)
+
+	if D > D̄
+		throw("D = $D > D̄ = $D̄, solve larger policy!")
+	end
+	
+	kᵒ = Vector{Float64}(undef, D)
+	rᵒ = Vector{Float64}(undef, D)
+
+	for t in 0:(D - 1)
+		kₜ = t > 0 ? kᵒ[t] : k₀
+
+		s = D - t 
+		rₜ = linear_interp(kspace, r[:, s], kₜ)
+		
+		kᵒ[t + 1] = kₜ - rₜ
+		rᵒ[t + 1] = rₜ
+	end
+
+	return [k₀, kᵒ...], [rᵒ..., 0.]
+end;
+
+# ╔═╡ 37f4d2a3-0112-4328-95ae-50aa7505cc1e
+T = 30
+
+# ╔═╡ 3a2268a4-d1ff-44ab-b075-57dcdaa64b71
+kearly, rearly = simulatepath(k₀, T, r);
+
+# ╔═╡ 25857237-a288-4c88-983f-e687ccd760dc
+klate, rlate = simulatepath(k₀, 2T, r);
+
+# ╔═╡ dc84be42-a61e-4fb4-ae6e-0ab962217da4
+md"## Construct costs"
+
+# ╔═╡ e0ae9cd4-b03f-4bfd-b2f5-d33d514eb553
+begin
+	rs = Vector{Float64}(undef, D̄)
+	cs = similar(rs)
+	
+	for d in 1:D̄
+		rs[d] = k₀ / d
+		cs[d] = linear_interp(kspace, V[:, d], k₀) / d
+	end
+
+	scatter(rs, cs; xlabel = L"\hat{r}", ylabel = L"\hat{c}")
+
+	X = [rs rs.^2 ./ 2]
+	
+	β̂ = X'X \ X'cs
+
+	residual = sum(x -> x^2,  cs .- X*β̂)
+end
+
+# ╔═╡ fc10b81b-fc4e-421e-bc74-b3a341e43f1e
+begin
+	scatter(rs, cs; xlabel = L"r", ylabel = L"c(r)", xtick = (0:0.1:1) .* k₀)
+	plot!(range(0, k₀, 1001), r -> β̂[1] * r + r^2 * β̂[2] / 2)
+end
+
+# ╔═╡ 09f60ab3-6259-4a25-8b83-d3efec6326d7
+md"## Normalisation"
+
+# ╔═╡ 144f94f1-06e6-4b5f-af6d-5f50c8725a42
+function ĉ(r, coeff)
+	coeff[1] * r + coeff[2] * r^2 / 2
+end;
+
+# ╔═╡ 406f04f7-a0fe-44a4-9bdc-a6d5955b1f55
+begin
+	normalisedr = 100rs ./ k₀
+	normalisedc = 100cs ./ (β̂[1] * k₀ + (β̂[2] / 2) * k₀^2)
+
+	normalisedX = [normalisedr normalisedr.^2 ./ 2]
+	coeffs = normalisedX'normalisedX \ normalisedX'normalisedc
+end
+
+# ╔═╡ 895a5fc8-19db-4b88-9991-bb7873d522fe
+k₀norm = 100.;
+
+# ╔═╡ 496799ad-7515-4912-9771-7dae483dcdac
+P = ĉ(k₀norm, coeffs) - T * ĉ(k₀norm / T, coeffs)
+
+# ╔═╡ 5239ee66-a106-47a2-9e25-23789b8768bb
+ĉ(100, coeffs)
+
+# ╔═╡ 7f7e697d-3b78-4e6a-8525-0709919f1053
+T * ĉ(k₀norm / T, coeffs)
+
+# ╔═╡ b4718c8b-2aab-476b-a6a0-f2da068d2eba
+2T * ĉ(k₀norm / 2T, coeffs)
+
+# ╔═╡ 9883d330-14d0-40ae-9aab-58e6402b6dfb
+md"# Testing randomness"
+
+# ╔═╡ f6eb8fdd-b42a-459e-bc8a-4b2f52d5f209
+begin
+	N = 100
+	kpaths = Matrix{Float64}(undef, N, 2T)
+	kpaths[:, 1] .= k₀norm
+	
+	for i in 1:N, t in 2:2T
+		kpaths[i, t] = kpaths[i, t - 1] * rand()
 	end
 end
 
-# ╔═╡ 749f0203-eeb4-4dfd-b388-69bfee02bea1
-let
-	simfig = plot(xlims = (0, 3netzero), xlabel = L"Year $t$", ylabel = L"Brown capital $b_t$", ylims = (0, Inf), legendtitle = L"p")
-
-	color = pcolors[p]
-	
-	T = length(meanpath)
-	
-	plot!(simfig, 1:T, meanpath; c = color, label = "$(round(100p, digits = 2))%")
-	plot!(simfig, 1:T, lowerpath; fillrange = upperpath, c = color, label = false, alpha = 0.25, linewidth = 0.)
-	
-	simfig
+# ╔═╡ 29e512f9-a367-4364-a24e-0e83b40c3fbf
+begin
+	k̂ = mean(kpaths, dims = 1)'
+	plot(k̂)
+	vline!([T])
+	vline!([2T])
 end
 
 # ╔═╡ 00000000-0000-0000-0000-000000000001
@@ -455,12 +421,12 @@ UnPack = "3a884ed6-31ef-47d7-9d2a-63182c4928ed"
 [compat]
 BenchmarkTools = "~1.8.0"
 FastClosures = "~0.3.2"
-FastInterpolations = "~0.4.9"
+FastInterpolations = "~0.4.12"
 LaTeXStrings = "~1.4.0"
-NaNMath = "~1.1.3"
+NaNMath = "~1.1.4"
 Optim = "~2.0.1"
 Plots = "~1.41.6"
-PlutoUI = "~0.7.80"
+PlutoUI = "~0.7.83"
 ProgressLogging = "~0.1.6"
 UnPack = "~1.0.2"
 """
@@ -471,7 +437,7 @@ PLUTO_MANIFEST_TOML_CONTENTS = """
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "c3ac7f459ca40730231cc31b3dbaf52c45aea52d"
+project_hash = "a8147768297241fa3a2f3df9fabfc96479ed7d6f"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "bbc22a9a08a0ef6460041086d8a7b27940ed4ffd"
@@ -1952,29 +1918,29 @@ version = "1.13.0+0"
 # ╠═1907ce8c-7cac-4683-83e7-febb6964d189
 # ╟─5c857e73-11c5-48b2-a4f1-9a6c590ac380
 # ╠═816ea907-321a-422e-969f-8800170fc271
-# ╟─33e1b5d4-be70-4be7-ac72-21b0b3248089
-# ╟─c6265738-61a3-4176-a844-21f07c9c59a8
-# ╠═f9dad3b2-e369-4de1-806e-c7d1105d7604
-# ╠═673135ed-1d62-4f75-861c-6f0921b108ec
-# ╠═7be081ba-8857-47cf-a872-2453d2b81e7a
-# ╠═0c89c090-8484-44da-95ae-c8e268584974
-# ╠═1c5c5ba1-7f01-437f-b099-fe2eca126de4
-# ╠═4bddc65c-f941-47e7-8947-125c48236adb
-# ╟─444b7ee3-5755-4ecf-9ef6-d0caf56fcfef
-# ╟─0c150831-02e1-42d2-bed3-97652ecaa380
-# ╠═492c1847-5a72-43e8-a568-c40a7d355495
-# ╠═80a5150a-5eb8-4e98-9ea1-45942f0ebe85
-# ╠═3d5afe26-bf47-49d6-aa91-fcbac1216594
-# ╟─869c942e-31be-41ad-af85-2da88b89e428
-# ╠═85475121-6074-46e8-85bd-cf2936579154
-# ╠═3427ea22-e3ba-4bf1-a3d9-2d834bb28d9d
-# ╠═e9511742-0925-4019-a68b-23e86fe0b401
-# ╠═39b081c3-12fc-47b1-ad90-258dfe863482
-# ╟─59d8f158-0672-4015-8606-87793e8d04c2
-# ╠═4c54b4b8-d340-4cc9-a95c-a423f127d692
-# ╟─333f524c-5e80-4dba-b54f-32a8fdb824f5
-# ╟─7c746053-d096-40c6-ad9d-1ccdac54db2a
-# ╟─1d020c83-4d10-484d-aa3d-afb4e8f0a735
-# ╠═749f0203-eeb4-4dfd-b388-69bfee02bea1
+# ╠═33e1b5d4-be70-4be7-ac72-21b0b3248089
+# ╟─e50a2f9d-a3c0-4a9d-8ab0-6be22bf3f4a2
+# ╠═efcd7b80-a828-4be7-abab-4ede1b6d4d65
+# ╟─6c80005e-2f15-4313-b12f-06e1ee5960ca
+# ╟─011f9c9a-3823-42f8-b3c0-0c86e2449ad8
+# ╠═a01e2223-a008-4049-bec8-a1fd361cde4e
+# ╠═dce3f8e1-2eb3-4ab2-b8c9-e9136f5c0890
+# ╠═37f4d2a3-0112-4328-95ae-50aa7505cc1e
+# ╠═3a2268a4-d1ff-44ab-b075-57dcdaa64b71
+# ╠═25857237-a288-4c88-983f-e687ccd760dc
+# ╟─dc84be42-a61e-4fb4-ae6e-0ab962217da4
+# ╠═e0ae9cd4-b03f-4bfd-b2f5-d33d514eb553
+# ╟─fc10b81b-fc4e-421e-bc74-b3a341e43f1e
+# ╟─09f60ab3-6259-4a25-8b83-d3efec6326d7
+# ╠═144f94f1-06e6-4b5f-af6d-5f50c8725a42
+# ╠═406f04f7-a0fe-44a4-9bdc-a6d5955b1f55
+# ╠═895a5fc8-19db-4b88-9991-bb7873d522fe
+# ╠═496799ad-7515-4912-9771-7dae483dcdac
+# ╠═5239ee66-a106-47a2-9e25-23789b8768bb
+# ╠═7f7e697d-3b78-4e6a-8525-0709919f1053
+# ╠═b4718c8b-2aab-476b-a6a0-f2da068d2eba
+# ╟─9883d330-14d0-40ae-9aab-58e6402b6dfb
+# ╠═f6eb8fdd-b42a-459e-bc8a-4b2f52d5f209
+# ╠═29e512f9-a367-4364-a24e-0e83b40c3fbf
 # ╟─00000000-0000-0000-0000-000000000001
 # ╟─00000000-0000-0000-0000-000000000002
